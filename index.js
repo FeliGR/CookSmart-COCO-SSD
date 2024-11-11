@@ -12,7 +12,7 @@ let knifeDetectionTime = null;
 
 const confidenceThreshold = 0.66;
 const maxHistoryLength = 5;
-const knifeReminderThreshold = 30000; // 1 minuto en milisegundos
+const knifeReminderThreshold = 30000;
 
 const kitchenObjects = [
   'bottle',
@@ -84,18 +84,22 @@ async function predictWebcam() {
 
     let foundBottle = false;
     let foundCup = false;
+    let foundPerson = false;
+    let foundKnife = false;
 
     for (let n = 0; n < predictions.length; n++) {
       if (predictions[n].score > confidenceThreshold && kitchenObjects.includes(predictions[n].class)) {
         const c = predictions[n].class;
         const score = Math.round(parseFloat(predictions[n].score) * 100);
 
-        trackObjectPosition(c, predictions, n)
+        trackObjectPosition(c, predictions, n);
 
-        // Comprobar si se encuentran "bottle" o "cup"
-        if (c === 'person') foundBottle = true;
-        if (c === 'cell phone') foundCup = true;
+        if (c === 'bottle') foundBottle = true;
+        if (c === 'cup') foundCup = true;
+        if (c === 'person') foundPerson = true;
+        if (c === 'knife') foundKnife = true;
 
+        // Mostrar los resultados de predicción en pantalla
         const p = document.createElement("p");
         p.innerText = `${c} - with ${score}% confidence.`;
         p.style = `margin-left: ${predictions[n].bbox[0]}px; 
@@ -118,9 +122,10 @@ async function predictWebcam() {
       }
     }
 
-    // Mostrar mensaje si se encuentran ambos objetos
     if (foundBottle && foundCup) {
       outputMessageEl.innerText = "¿Te gustaría tomar algo?";
+    } else if (foundPerson && foundKnife) {
+      outputMessageEl.innerText = "Precaución: asegúrate de manejar el cuchillo de forma segura.";
     } else {
       outputMessageEl.innerText = "Detectando objetos...";
     }
