@@ -6,13 +6,13 @@ const outputMessageEl = document.querySelector("#outputMessage");
 
 let webcam;
 let model;
-let detectionHistory = [];
 let knifePosition = null;
 let knifeDetectionTime = null;
+let knifeReminderDisplayed = false; 
+const confidenceThreshold = 0.5;
+const knifeReminderThreshold = 60000;
 
-const confidenceThreshold = 0.66;
-const maxHistoryLength = 5;
-const knifeReminderThreshold = 30000;
+const positionTolerance = 50;
 
 const kitchenObjects = [
   'bottle',
@@ -38,13 +38,12 @@ const kitchenObjects = [
   'sink',
   'refrigerator',
   'dining table',
-  'cell phone',
-  'person'
+  'person',
 ];
 
 function initTFJS() {
   if (typeof tf === "undefined") {
-    throw new Error("TensorFlow.js not loaded");
+    throw new Error("TensorFlow.js no está cargado");
   }
 }
 
@@ -58,18 +57,18 @@ async function enableCam(event) {
   event.target.classList.add("removed");
   try {
     webcam = await tf.data.webcam(webcamEl);
-    outputMessageEl.innerText = "Webcam enabled! Detecting objects...";
+    outputMessageEl.innerText = "¡Webcam habilitada! Detectando objetos...";
     await predictWebcam();
   } catch (error) {
-    console.error("Webcam access failed:", error);
-    outputMessageEl.innerText = "Webcam access denied.";
+    console.error("Acceso a la webcam denegado:", error);
+    outputMessageEl.innerText = "Acceso a la webcam denegado.";
   }
 }
 
 async function loadCocoSsdModel() {
   model = await cocoSsd.load();
   btnEnableWebcam.disabled = false;
-  outputMessageEl.innerText = "Model loaded! Enable the webcam to start detection.";
+  outputMessageEl.innerText = "¡Modelo cargado! Habilita la webcam para comenzar la detección.";
 }
 
 async function predictWebcam() {
@@ -86,22 +85,26 @@ async function predictWebcam() {
     let foundCup = false;
     let foundPerson = false;
     let foundKnife = false;
+    let currentKnifePosition = null;
 
     for (let n = 0; n < predictions.length; n++) {
-      if (predictions[n].score > confidenceThreshold && kitchenObjects.includes(predictions[n].class)) {
+      if (
+        predictions[n].score > confidenceThreshold &&
+        kitchenObjects.includes(predictions[n].class)
+      ) {
         const c = predictions[n].class;
         const score = Math.round(parseFloat(predictions[n].score) * 100);
-
-        trackObjectPosition(c, predictions, n);
 
         if (c === 'bottle') foundBottle = true;
         if (c === 'cup') foundCup = true;
         if (c === 'person') foundPerson = true;
-        if (c === 'knife') foundKnife = true;
+        if (c === 'knife') {
+          foundKnife = true;
+          currentKnifePosition = predictions[n].bbox;
+        }
 
-        // Mostrar los resultados de predicción en pantalla
         const p = document.createElement("p");
-        p.innerText = `${c} - with ${score}% confidence.`;
+        p.innerText = `${c} - con ${score}% de confianza.`;
         p.style = `margin-left: ${predictions[n].bbox[0]}px; 
                    margin-top: ${predictions[n].bbox[1] - 10}px; 
                    width: ${predictions[n].bbox[2] - 10}px; 
@@ -122,7 +125,43 @@ async function predictWebcam() {
       }
     }
 
-    if (foundBottle && foundCup) {
+    if (foundKnife && currentKnifePosition) {
+      if (knifePosition) {
+        if (arePositionsEqual(knifePosition, currentKnifePosition)) {
+          if (!knifeDetectionTime) {
+            knifeDetectionTime = Date.now();
+            console.log("Posición del cuchillo estable, temporizador iniciado.");
+          } else {
+            const elapsed = Date.now() - knifeDetectionTime;
+            console.log(`El cuchillo ha estado estacionario por ${elapsed / 1000} segundos.`);
+            if (elapsed > knifeReminderThreshold) {
+              displayKnifeReminder();
+              knifeDetectionTime = null;
+            }
+          }
+        } else {
+          knifePosition = currentKnifePosition;
+          knifeDetectionTime = null;
+          knifeReminderDisplayed = false;
+          console.log("Posición del cuchillo cambió, temporizador reiniciado.");
+        }
+      } else {
+        knifePosition = currentKnifePosition;
+        knifeDetectionTime = null;
+        console.log("Cuchillo detectado, posición registrada.");
+      }
+    } else {
+      if (knifePosition || knifeDetectionTime) {
+        console.log("Cuchillo ya no detectado, posición y temporizador reiniciados.");
+      }
+      knifePosition = null;
+      knifeDetectionTime = null;
+      knifeReminderDisplayed = false;
+    }
+
+    if (knifeReminderDisplayed) {
+      outputMessageEl.innerText = "Recuerda guardar el cuchillo después de usarlo.";
+    } else if (foundBottle && foundCup) {
       outputMessageEl.innerText = "¿Te gustaría tomar algo?";
     } else if (foundPerson && foundKnife) {
       outputMessageEl.innerText = "Precaución: asegúrate de manejar el cuchillo de forma segura.";
@@ -135,41 +174,27 @@ async function predictWebcam() {
   }
 }
 
-function trackObjectPosition(c, predictions, n) {
-  if (c === 'cell phone') {
-    const knifeCurrentPosition = predictions[n].bbox;
-
-    if (knifePosition && arePositionsEqual(knifePosition, knifeCurrentPosition)) {
-      if (!knifeDetectionTime) {
-        knifeDetectionTime = Date.now();
-      } else if (Date.now() - knifeDetectionTime > knifeReminderThreshold) {
-        displayKnifeReminder();
-      }
-    } else {
-      knifePosition = knifeCurrentPosition;
-      knifeDetectionTime = null;
-    }
-  }
-}
-
 function arePositionsEqual(pos1, pos2) {
-  const tolerance = 20;
+  const [x1, y1, w1, h1] = pos1;
+  const [x2, y2, w2, h2] = pos2;
   return (
-    Math.abs(pos1[0] - pos2[0]) < tolerance &&
-    Math.abs(pos1[1] - pos2[1]) < tolerance &&
-    Math.abs(pos1[2] - pos2[2]) < tolerance &&
-    Math.abs(pos1[3] - pos2[3]) < tolerance
+    Math.abs(x1 - x2) <= positionTolerance &&
+    Math.abs(y1 - y2) <= positionTolerance &&
+    Math.abs(w1 - w2) <= positionTolerance &&
+    Math.abs(h1 - h2) <= positionTolerance
   );
 }
 
 function displayKnifeReminder() {
+  knifeReminderDisplayed = true;
   outputMessageEl.innerText = "Recuerda guardar el cuchillo después de usarlo.";
+  console.log("Recordatorio mostrado: Recuerda guardar el cuchillo después de usarlo.");
 }
 
 async function app() {
   if (!getUserMediaSupported()) {
-    console.warn("getUserMedia() is not supported by your browser");
-    outputMessageEl.innerText = "Webcam not supported by your browser.";
+    console.warn("getUserMedia() no es soportado por tu navegador");
+    outputMessageEl.innerText = "La webcam no es soportada por tu navegador.";
     return;
   }
   btnEnableWebcam.addEventListener("click", enableCam);
@@ -185,4 +210,4 @@ async function app() {
     console.error(error);
     outputMessageEl.innerText = error.message;
   }
-}());
+})();
